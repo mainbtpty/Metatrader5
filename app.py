@@ -115,7 +115,9 @@ with col2:
 st.markdown("---")
 st.subheader("INFO")
 st.markdown("""
-This is an open-source project. We welcome contributions, donations, and feedback from developers, users, and supporters. 
+This is an open-source
+
+Th.  This project is given by S.I.R @ workshop17 Cape Town.Develop by Charles Oni (+27814272499).We welcome contributions, donations, and feedback from users, and supporters. 
 Join us to make a difference and be part of a growing community!
 """)
 col_a, col_b = st.columns(2)
