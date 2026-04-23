@@ -24,7 +24,7 @@ update_interval = st.sidebar.slider(
 st.sidebar.info("✅ Using real live data from Yahoo Finance")
 
 # ==================== DATA FETCH ====================
-@st.cache_data(ttl=5)
+@st.cache_data(ttl=10)
 def get_real_data(symbol):
     try:
         data = yf.download(
@@ -39,22 +39,36 @@ def get_real_data(symbol):
 
         data = data.reset_index()
 
-        # Handle both possible column names
+        # Handle timestamp column
         if "Datetime" in data.columns:
             data.rename(columns={"Datetime": "timestamp"}, inplace=True)
         elif "Date" in data.columns:
             data.rename(columns={"Date": "timestamp"}, inplace=True)
 
-        # 🔥 CRITICAL FIX
         data["timestamp"] = pd.to_datetime(data["timestamp"])
 
-        data.rename(columns={
+        # Standardize column names
+        rename_map = {
             "Open": "open",
             "High": "high",
             "Low": "low",
             "Close": "close",
+            "Adj Close": "adj_close",
             "Volume": "volume"
-        }, inplace=True)
+        }
+
+        data.rename(columns=rename_map, inplace=True)
+
+        # Ensure required columns exist
+        required_cols = ["open", "high", "low", "close"]
+        for col in required_cols:
+            if col not in data.columns:
+                st.error(f"Missing column: {col}")
+                return pd.DataFrame()
+
+        # Handle missing volume (common in forex)
+        if "volume" not in data.columns:
+            data["volume"] = 0
 
         return data
 
@@ -69,32 +83,32 @@ if df_5m.empty:
     st.warning("⚠️ No data received. Try another asset or refresh.")
     st.stop()
 
-# ==================== RESAMPLING ====================
+# ==================== PREP ====================
+df_5m = df_5m.sort_values("timestamp")
 df_5m = df_5m.set_index("timestamp")
 
-df_15m = df_5m.resample("15min").agg({
-    "open": "first",
-    "high": "max",
-    "low": "min",
-    "close": "last",
-    "volume": "sum"
-}).dropna().reset_index()
+# ==================== SAFE RESAMPLING FUNCTION ====================
+def resample_data(df, timeframe):
+    try:
+        return df.resample(timeframe).agg({
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum"
+        }).dropna().reset_index()
+    except Exception as e:
+        st.error(f"Resample error ({timeframe}): {e}")
+        return pd.DataFrame()
 
-df_1h = df_5m.resample("1h").agg({
-    "open": "first",
-    "high": "max",
-    "low": "min",
-    "close": "last",
-    "volume": "sum"
-}).dropna().reset_index()
+# ==================== RESAMPLING ====================
+df_15m = resample_data(df_5m, "15min")
+df_1h = resample_data(df_5m, "1h")
+df_daily = resample_data(df_5m, "1D")
 
-df_daily = df_5m.resample("1D").agg({
-    "open": "first",
-    "high": "max",
-    "low": "min",
-    "close": "last",
-    "volume": "sum"
-}).dropna().reset_index()
+if df_daily.empty:
+    st.warning("⚠️ Not enough data for higher timeframe analysis.")
+    st.stop()
 
 # ==================== DAILY BIAS ====================
 df_daily["ema9"] = df_daily["close"].ewm(span=9).mean()
@@ -114,61 +128,33 @@ with tabs[0]:
     st.subheader("Daily Bias (EMA 9 vs EMA 21)")
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=df_daily["timestamp"],
-        y=df_daily["close"],
-        name="Price",
-        line=dict(color="blue")
-    ))
-    fig.add_trace(go.Scatter(
-        x=df_daily["timestamp"],
-        y=df_daily["ema9"],
-        name="EMA 9",
-        line=dict(color="orange")
-    ))
-    fig.add_trace(go.Scatter(
-        x=df_daily["timestamp"],
-        y=df_daily["ema21"],
-        name="EMA 21",
-        line=dict(color="green")
-    ))
+    fig.add_trace(go.Scatter(x=df_daily["timestamp"], y=df_daily["close"], name="Price"))
+    fig.add_trace(go.Scatter(x=df_daily["timestamp"], y=df_daily["ema9"], name="EMA 9"))
+    fig.add_trace(go.Scatter(x=df_daily["timestamp"], y=df_daily["ema21"], name="EMA 21"))
 
     st.plotly_chart(fig, use_container_width=True)
 
 # -------- 1H --------
 with tabs[1]:
     st.subheader("1H Structure")
-    st.line_chart(df_1h.set_index("timestamp")["close"])
+    if not df_1h.empty:
+        st.line_chart(df_1h.set_index("timestamp")["close"])
 
 # -------- 15M --------
 with tabs[2]:
     st.subheader("15M EMA Strategy")
 
-    df_15 = df_15m.copy()
-    df_15["ema9"] = df_15["close"].ewm(span=9).mean()
-    df_15["ema21"] = df_15["close"].ewm(span=21).mean()
+    if not df_15m.empty:
+        df_15 = df_15m.copy()
+        df_15["ema9"] = df_15["close"].ewm(span=9).mean()
+        df_15["ema21"] = df_15["close"].ewm(span=21).mean()
 
-    fig15 = go.Figure()
-    fig15.add_trace(go.Scatter(
-        x=df_15["timestamp"],
-        y=df_15["close"],
-        name="Price",
-        line=dict(color="blue")
-    ))
-    fig15.add_trace(go.Scatter(
-        x=df_15["timestamp"],
-        y=df_15["ema9"],
-        name="EMA 9",
-        line=dict(color="orange")
-    ))
-    fig15.add_trace(go.Scatter(
-        x=df_15["timestamp"],
-        y=df_15["ema21"],
-        name="EMA 21",
-        line=dict(color="green")
-    ))
+        fig15 = go.Figure()
+        fig15.add_trace(go.Scatter(x=df_15["timestamp"], y=df_15["close"], name="Price"))
+        fig15.add_trace(go.Scatter(x=df_15["timestamp"], y=df_15["ema9"], name="EMA 9"))
+        fig15.add_trace(go.Scatter(x=df_15["timestamp"], y=df_15["ema21"], name="EMA 21"))
 
-    st.plotly_chart(fig15, use_container_width=True)
+        st.plotly_chart(fig15, use_container_width=True)
 
 # -------- 5M --------
 with tabs[3]:
@@ -188,12 +174,11 @@ with col2:
     if st.button("Start Paper Trading"):
         st.info("📋 Paper trading mode activated")
 
-# ==================== AUTO REFRESH ====================
+# ==================== FOOTER ====================
 st.caption(
     f"Refresh every {update_interval}s | Last update: {datetime.now().strftime('%H:%M:%S')}"
 )
 
-# ==================== FOOTER ====================
 st.markdown("---")
 st.subheader("INFO")
 
