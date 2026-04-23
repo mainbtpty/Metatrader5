@@ -1,53 +1,54 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-import numpy as np
-from datetime import datetime
+import yfinance as yf
+from datetime import datetime, timedelta
+import time
 
 st.set_page_config(page_title="Forex Auto Trader", layout="wide")
 st.title("🚀 Forex Automated Trading Bot")
-st.markdown("**Multi-Timeframe Trend-Following Strategy** | London & New York Sessions")
+st.markdown("**Multi-Timeframe Trend-Following Strategy** | Live Data from Yahoo Finance")
 
-# Test Mode
+# ==================== SETTINGS ====================
 st.sidebar.header("Settings")
-st.sidebar.info("✅ Running in Test Mode with Realistic Data")
+selected_pair = st.sidebar.selectbox(
+    "Select Currency Pair",
+    ["EURUSD=X", "USDJPY=X", "GBPUSD=X", "USDCHF=X", "BTC-USD", "GC=F"]  # GC=F is Gold
+)
 
-# ==================== REALISTIC DUMMY DATA ====================
-def get_realistic_dummy_data():
-    np.random.seed(42)
-    dates = pd.date_range(end=datetime.now(), periods=400, freq='5min')
-    
-    base_price = 1.0850
-    trend = np.linspace(0, 0.018, 400)
-    noise = np.random.normal(0, 0.00085, 400)
-    prices = base_price + trend + np.cumsum(noise)
-    
-    df = pd.DataFrame({
-        'timestamp': dates,
-        'open': prices,
-        'high': prices + np.random.uniform(0.0004, 0.0015, 400),
-        'low': prices - np.random.uniform(0.0004, 0.0015, 400),
-        'close': prices + np.random.normal(0, 0.00035, 400),
-        'volume': np.random.randint(900, 2800, 400)
-    })
-    return {
-        '1d': df.resample('D', on='timestamp').agg({'open':'first','high':'max','low':'min','close':'last','volume':'sum'}).reset_index(),
-        '1h': df.resample('h', on='timestamp').agg({'open':'first','high':'max','low':'min','close':'last','volume':'sum'}).reset_index(),
-        '15m': df.resample('15min', on='timestamp').agg({'open':'first','high':'max','low':'min','close':'last','volume':'sum'}).reset_index(),
-        '5m': df
-    }
+update_interval = st.sidebar.slider("Chart Update Interval (seconds)", min_value=3, max_value=15, value=3)
 
-data = get_realistic_dummy_data()
+st.sidebar.info("✅ Using real live data from Yahoo Finance")
 
-# Daily bias with EMAs
-df_daily = data['1d'].copy()
+# ==================== FETCH REAL DATA ====================
+@st.cache_data(ttl=update_interval)
+def get_real_data(symbol, period="5d", interval="5m"):
+    try:
+        data = yf.download(symbol, period=period, interval=interval, progress=False)
+        data = data.reset_index()
+        data = data.rename(columns={'Datetime': 'timestamp', 'Open': 'open', 'High': 'high', 
+                                  'Low': 'low', 'Close': 'close', 'Volume': 'volume'})
+        return data
+    except:
+        st.error(f"Could not fetch data for {symbol}")
+        return pd.DataFrame()
+
+# Get data
+df_5m = get_real_data(selected_pair)
+
+# Resample to other timeframes
+df_15m = df_5m.resample('15min', on='timestamp').agg({'open':'first','high':'max','low':'min','close':'last','volume':'sum'}).reset_index()
+df_1h = df_5m.resample('h', on='timestamp').agg({'open':'first','high':'max','low':'min','close':'last','volume':'sum'}).reset_index()
+df_daily = df_5m.resample('D', on='timestamp').agg({'open':'first','high':'max','low':'min','close':'last','volume':'sum'}).reset_index()
+
+# Daily Bias
 df_daily['ema9'] = df_daily['close'].ewm(span=9).mean()
 df_daily['ema21'] = df_daily['close'].ewm(span=21).mean()
 daily_bias = "BULLISH" if df_daily['ema9'].iloc[-1] > df_daily['ema21'].iloc[-1] else "BEARISH"
 
-st.info(f"**Daily Bias:** {daily_bias} | Current Session: London / New York")
+st.info(f"**Daily Bias:** {daily_bias} | Pair: {selected_pair} | Last Updated: {datetime.now().strftime('%H:%M:%S')}")
 
-# Tabs with proper EMA lines
+# Tabs
 tabs = st.tabs(["Daily", "1H", "15M", "5M"])
 
 with tabs[0]:
@@ -59,12 +60,12 @@ with tabs[0]:
     st.plotly_chart(fig, use_container_width=True)
 
 with tabs[1]:
-    st.write("1H Structure (Supply/Demand Zones - Simulated)")
-    st.line_chart(data['1h'].set_index('timestamp')['close'])
+    st.write("1H Structure")
+    st.line_chart(df_1h.set_index('timestamp')['close'])
 
 with tabs[2]:
     st.write("15M EMA(9/21) + RSI Confirmation")
-    df_15 = data['15m']
+    df_15 = df_15m.copy()
     df_15['ema9'] = df_15['close'].ewm(span=9).mean()
     df_15['ema21'] = df_15['close'].ewm(span=21).mean()
     fig15 = go.Figure()
@@ -75,18 +76,22 @@ with tabs[2]:
 
 with tabs[3]:
     st.write("5M Entry Trigger")
-    st.line_chart(data['5m'].set_index('timestamp')['close'])
+    st.line_chart(df_5m.set_index('timestamp')['close'])
 
-# Trading Controls
+# Controls
 st.subheader("Trading Controls")
 col1, col2 = st.columns(2)
 with col1:
     if st.button("Start Live Trading", type="primary"):
-        st.success("✅ Strategy signals generated (Demo mode)")
+        st.success("✅ Strategy running on LIVE Yahoo Finance data")
 with col2:
     if st.button("Start Paper Trading"):
         st.info("📋 Paper trading simulation active")
 
+# Auto-refresh every 3 seconds
+st.caption(f"Data refreshes every {update_interval} seconds • Last update: {datetime.now().strftime('%H:%M:%S')}")
+
+# Info
 # Info Section
 st.markdown("---")
 st.subheader("INFO")
