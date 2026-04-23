@@ -7,7 +7,6 @@ from datetime import datetime
 # ==================== PAGE ====================
 st.set_page_config(page_title="Forex Auto Trader", layout="wide")
 st.title("🚀 Forex Automated Trading Bot")
-st.markdown("**Multi-Timeframe Trend-Following Strategy** | Live Data from Yahoo Finance")
 
 # ==================== SETTINGS ====================
 st.sidebar.header("Settings")
@@ -17,178 +16,130 @@ selected_pair = st.sidebar.selectbox(
     ["EURUSD=X", "USDJPY=X", "GBPUSD=X", "USDCHF=X", "BTC-USD", "GC=F"]
 )
 
-update_interval = st.sidebar.slider(
-    "Chart Update Interval (seconds)", 3, 15, 5
-)
-
-st.sidebar.info("✅ Using real live data from Yahoo Finance")
-
 # ==================== DATA FETCH ====================
 @st.cache_data(ttl=10)
 def get_real_data(symbol):
     try:
-        data = yf.download(
-            symbol,
-            period="5d",
-            interval="5m",
-            progress=False
-        )
+        df = yf.download(symbol, period="5d", interval="5m", progress=False)
 
-        if data.empty:
+        if df.empty:
             return pd.DataFrame()
 
-        data = data.reset_index()
+        # 🔥 FIX 1: Flatten MultiIndex columns
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
 
-        # Handle timestamp column
-        if "Datetime" in data.columns:
-            data.rename(columns={"Datetime": "timestamp"}, inplace=True)
-        elif "Date" in data.columns:
-            data.rename(columns={"Date": "timestamp"}, inplace=True)
+        df = df.reset_index()
 
-        data["timestamp"] = pd.to_datetime(data["timestamp"])
+        # 🔥 FIX 2: Normalize timestamp
+        if "Datetime" in df.columns:
+            df.rename(columns={"Datetime": "timestamp"}, inplace=True)
+        elif "Date" in df.columns:
+            df.rename(columns={"Date": "timestamp"}, inplace=True)
 
-        # Standardize column names
-        rename_map = {
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+
+        # 🔥 FIX 3: Rename safely
+        df.rename(columns={
             "Open": "open",
             "High": "high",
             "Low": "low",
             "Close": "close",
-            "Adj Close": "adj_close",
             "Volume": "volume"
-        }
+        }, inplace=True)
 
-        data.rename(columns=rename_map, inplace=True)
+        # 🔥 FIX 4: Keep ONLY valid columns that exist
+        valid_cols = ["timestamp", "open", "high", "low", "close", "volume"]
+        df = df[[col for col in valid_cols if col in df.columns]]
 
-        # Ensure required columns exist
-        required_cols = ["open", "high", "low", "close"]
-        for col in required_cols:
-            if col not in data.columns:
-                st.error(f"Missing column: {col}")
-                return pd.DataFrame()
+        # 🔥 FIX 5: Add volume if missing (forex case)
+        if "volume" not in df.columns:
+            df["volume"] = 0
 
-        # Handle missing volume (common in forex)
-        if "volume" not in data.columns:
-            data["volume"] = 0
-
-        return data
+        return df
 
     except Exception as e:
-        st.error(f"Error fetching data: {e}")
+        st.error(f"Data error: {e}")
         return pd.DataFrame()
 
-# ==================== LOAD DATA ====================
+# ==================== LOAD ====================
 df_5m = get_real_data(selected_pair)
 
 if df_5m.empty:
-    st.warning("⚠️ No data received. Try another asset or refresh.")
+    st.warning("No data")
     st.stop()
+
+# ==================== DEBUG (IMPORTANT) ====================
+st.write("Columns received:", df_5m.columns.tolist())
 
 # ==================== PREP ====================
 df_5m = df_5m.sort_values("timestamp")
 df_5m = df_5m.set_index("timestamp")
 
-# ==================== SAFE RESAMPLING FUNCTION ====================
-def resample_data(df, timeframe):
+# ==================== SAFE RESAMPLE ====================
+def safe_resample(df, rule):
+    needed = ["open", "high", "low", "close", "volume"]
+
+    # 🔥 Only use columns that actually exist
+    existing = [col for col in needed if col in df.columns]
+
+    if len(existing) < 4:
+        st.error(f"Not enough valid columns for {rule}")
+        return pd.DataFrame()
+
+    agg_map = {}
+    if "open" in existing: agg_map["open"] = "first"
+    if "high" in existing: agg_map["high"] = "max"
+    if "low" in existing: agg_map["low"] = "min"
+    if "close" in existing: agg_map["close"] = "last"
+    if "volume" in existing: agg_map["volume"] = "sum"
+
     try:
-        return df.resample(timeframe).agg({
-            "open": "first",
-            "high": "max",
-            "low": "min",
-            "close": "last",
-            "volume": "sum"
-        }).dropna().reset_index()
+        return df.resample(rule).agg(agg_map).dropna().reset_index()
     except Exception as e:
-        st.error(f"Resample error ({timeframe}): {e}")
+        st.error(f"Resample failed: {e}")
         return pd.DataFrame()
 
 # ==================== RESAMPLING ====================
-df_15m = resample_data(df_5m, "15min")
-df_1h = resample_data(df_5m, "1h")
-df_daily = resample_data(df_5m, "1D")
+df_15m = safe_resample(df_5m, "15min")
+df_1h = safe_resample(df_5m, "1h")
+df_daily = safe_resample(df_5m, "1D")
 
+# ==================== CHECK ====================
 if df_daily.empty:
-    st.warning("⚠️ Not enough data for higher timeframe analysis.")
+    st.warning("⚠️ Not enough higher timeframe data")
     st.stop()
 
 # ==================== DAILY BIAS ====================
 df_daily["ema9"] = df_daily["close"].ewm(span=9).mean()
 df_daily["ema21"] = df_daily["close"].ewm(span=21).mean()
 
-daily_bias = "BULLISH" if df_daily["ema9"].iloc[-1] > df_daily["ema21"].iloc[-1] else "BEARISH"
+bias = "BULLISH" if df_daily["ema9"].iloc[-1] > df_daily["ema21"].iloc[-1] else "BEARISH"
 
-st.info(
-    f"**Daily Bias:** {daily_bias} | Pair: {selected_pair} | Last Updated: {datetime.now().strftime('%H:%M:%S')}"
-)
+st.info(f"Bias: {bias}")
 
-# ==================== TABS ====================
-tabs = st.tabs(["Daily", "1H", "15M", "5M"])
+# ==================== CHART ====================
+st.subheader("5M Chart")
+st.line_chart(df_5m["close"])
 
-# -------- DAILY --------
-with tabs[0]:
-    st.subheader("Daily Bias (EMA 9 vs EMA 21)")
+# ==================== 15M ====================
+if not df_15m.empty:
+    st.subheader("15M Chart")
+    st.line_chart(df_15m.set_index("timestamp")["close"])
 
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df_daily["timestamp"], y=df_daily["close"], name="Price"))
-    fig.add_trace(go.Scatter(x=df_daily["timestamp"], y=df_daily["ema9"], name="EMA 9"))
-    fig.add_trace(go.Scatter(x=df_daily["timestamp"], y=df_daily["ema21"], name="EMA 21"))
+# ==================== 1H ====================
+if not df_1h.empty:
+    st.subheader("1H Chart")
+    st.line_chart(df_1h.set_index("timestamp")["close"])
 
-    st.plotly_chart(fig, use_container_width=True)
+# ==================== DAILY ====================
+st.subheader("Daily Chart")
 
-# -------- 1H --------
-with tabs[1]:
-    st.subheader("1H Structure")
-    if not df_1h.empty:
-        st.line_chart(df_1h.set_index("timestamp")["close"])
+fig = go.Figure()
+fig.add_trace(go.Scatter(x=df_daily["timestamp"], y=df_daily["close"], name="Price"))
+fig.add_trace(go.Scatter(x=df_daily["timestamp"], y=df_daily["ema9"], name="EMA 9"))
+fig.add_trace(go.Scatter(x=df_daily["timestamp"], y=df_daily["ema21"], name="EMA 21"))
 
-# -------- 15M --------
-with tabs[2]:
-    st.subheader("15M EMA Strategy")
+st.plotly_chart(fig, use_container_width=True)
 
-    if not df_15m.empty:
-        df_15 = df_15m.copy()
-        df_15["ema9"] = df_15["close"].ewm(span=9).mean()
-        df_15["ema21"] = df_15["close"].ewm(span=21).mean()
-
-        fig15 = go.Figure()
-        fig15.add_trace(go.Scatter(x=df_15["timestamp"], y=df_15["close"], name="Price"))
-        fig15.add_trace(go.Scatter(x=df_15["timestamp"], y=df_15["ema9"], name="EMA 9"))
-        fig15.add_trace(go.Scatter(x=df_15["timestamp"], y=df_15["ema21"], name="EMA 21"))
-
-        st.plotly_chart(fig15, use_container_width=True)
-
-# -------- 5M --------
-with tabs[3]:
-    st.subheader("5M Entry Chart")
-    st.line_chart(df_5m["close"])
-
-# ==================== CONTROLS ====================
-st.subheader("Trading Controls")
-
-col1, col2 = st.columns(2)
-
-with col1:
-    if st.button("Start Live Trading", type="primary"):
-        st.success("✅ Live strategy running (data only, no real trades yet)")
-
-with col2:
-    if st.button("Start Paper Trading"):
-        st.info("📋 Paper trading mode activated")
-
-# ==================== FOOTER ====================
-st.caption(
-    f"Refresh every {update_interval}s | Last update: {datetime.now().strftime('%H:%M:%S')}"
-)
-
-st.markdown("---")
-st.subheader("INFO")
-
-st.markdown("This app uses Yahoo Finance live market data.")
-
-st.markdown("""
-**Contact:**
-- Email: onitechs@gmail.com
-
-**Profiles:**
-- LinkedIn: Charles Oni
-- GitHub: mainbtpty
-""")
+st.success("App running successfully ✅")
