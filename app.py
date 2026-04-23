@@ -92,13 +92,9 @@ with col2:
 st.caption(f"Data refreshes every {update_interval} seconds • Last update: {datetime.now().strftime('%H:%M:%S')}")
 
 # Info
-# Info Section
 st.markdown("---")
 st.subheader("INFO")
-st.markdown("""
-This is project given by S.I.R.at worksho17.developed by Charles Oni.We welcome contributions, donations, and feedback from users, and supporters. 
-Join us to make a difference and be part of a growing community!
-""")
+st.markdown("This is an open-source project using real market data from Yahoo Finance.")
 col_a, col_b = st.columns(2)
 with col_a:
     st.markdown("**Contact Me:**")
@@ -107,5 +103,3 @@ with col_b:
     st.markdown("**Connect Online:**")
     st.markdown("- LinkedIn: [Charles Oni](https://www.linkedin.com/in/charles-oni-b45a91253/)")
     st.markdown("- GitHub: [mainbtpty](https://github.com/mainbtpty)")
-
-st.caption("Built with Streamlit • Strategy logic implemented with realistic dummy data")
